@@ -1,0 +1,5 @@
+# Copy these values into cloudflare/.dev.vars locally.
+# Never commit the real .dev.vars file.
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
+SECRET_KEY=

@@ -1,0 +1,30 @@
+name: backend-tests
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "hardening/**"]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: test-only-secret-key-that-is-long-enough
+      ADMIN_USERNAME: test-admin
+      ADMIN_PASSWORD: test-password-not-for-production
+      DB_PATH: /tmp/sooshpanel-test.db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r backend/requirements.txt pytest
+      - run: python -m compileall -q backend/app stats/stats.py
+      - run: pytest -q
+        working-directory: backend
+      - name: Validate generated Xray config shape
+        run: python -c "import json; c=json.load(open('xray/config.json')); assert isinstance(c.get('inbounds'),list); assert isinstance(c.get('outbounds'),list); print('Xray config JSON structure OK')"

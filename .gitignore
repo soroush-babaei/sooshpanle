@@ -1,0 +1,39 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+cloudflare/.dev.vars
+cloudflare/.dev.vars.*
+!.dev.vars.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases and runtime state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+*.pid
+
+# Cloudflare/Wrangler local state
+cloudflare/.wrangler/
+.wrangler/
+
+# Local binaries and generated bundles
+data/xray-bin/
+data/xray.zip
+dist/
+build/
+node_modules/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
