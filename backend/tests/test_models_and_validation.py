@@ -1,8 +1,12 @@
 import os
+import sys
 import tempfile
 
 import pytest
 from pydantic import ValidationError
+
+# Ensure the backend package is importable when pytest chooses the repository root.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Configure before importing the app modules; engine and JWT settings are module-level.
 _fd, _db_path = tempfile.mkstemp(prefix="sooshpanel-test-", suffix=".db")
