@@ -1,43 +1,47 @@
-$B = "http://127.0.0.1:8000"
-$login = Invoke-RestMethod -Method Post -Uri "$B/api/login" -ContentType "application/json" -Body '{"username":"admin","password":"test1234"}'
-$H = @{ Authorization = "Bearer $($login.token)" }
-$users = Invoke-RestMethod -Uri "$B/api/users" -Headers $H
-$u1 = $users | Where-Object { $_.username -eq 'mci-test' }
-$tok1 = $u1.sub_url.Split('/sub/')[1]
+# Safe, portable API smoke test for a running local SooshPanel.
+# Set credentials in the current PowerShell session; do not put real secrets in this file.
+#   $env:SOOSHPANEL_BASE_URL = "http://127.0.0.1:8000"
+#   $env:SOOSHPANEL_ADMIN_USERNAME = "admin"
+#   $env:SOOSHPANEL_ADMIN_PASSWORD = "your-test-password"
+#   $env:SOOSHPANEL_TOTP = "123456" # only if 2FA is enabled
+#   .\scripts\test-api.ps1
 
-"=== SUB (WS, TLS) ==="
-$sub1 = Invoke-WebRequest -UseBasicParsing "$B/sub/$tok1"
-$decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sub1.Content))
-$decoded
+$ErrorActionPreference = "Stop"
+$Base = if ($env:SOOSHPANEL_BASE_URL) { $env:SOOSHPANEL_BASE_URL.TrimEnd('/') } else { "http://127.0.0.1:8000" }
+$Username = $env:SOOSHPANEL_ADMIN_USERNAME
+$Password = $env:SOOSHPANEL_ADMIN_PASSWORD
+$Totp = $env:SOOSHPANEL_TOTP
 
-"=== QR ==="
-$qr = Invoke-WebRequest -UseBasicParsing "$B/sub/$tok1/qr"
-"content-type=$($qr.Headers['Content-Type']) len=$($qr.Content.Length) head=$($qr.Content.Substring(0,60))"
-
-"=== XRAY CONFIG ==="
-$cfg = Get-Content "d:\other\iNTERNET\SooshPanle\xray\config.json" -Raw | ConvertFrom-Json
-$cfg.inbounds | ForEach-Object {
-    $emails = ($_.settings.clients | ForEach-Object { $_.email }) -join ','
-    "$($_.tag): port=$($_.port) clients=[$emails]"
+Write-Host "SooshPanel API smoke test: $Base"
+try {
+    $docs = Invoke-WebRequest -UseBasicParsing -Uri "$Base/docs" -TimeoutSec 8
+    Write-Host "[PASS] API docs reachable (HTTP $([int]$docs.StatusCode))"
+} catch {
+    throw "API is not reachable at $Base. Start the panel first and check container logs. $($_.Exception.Message)"
 }
-"policy: " + ($cfg.policy.levels.'0' | ConvertTo-Json -Compress)
 
-"=== 2FA FLOW ==="
-$tfa = Invoke-RestMethod -Uri "$B/api/2fa/setup" -Headers $H
-"totp secret len=$($tfa.secret.Length)"
-$py = "d:\other\iNTERNET\SooshPanle\backend\.venv\Scripts\python.exe"
-$code = & $py -c "import pyotp; print(pyotp.TOTP('$($tfa.secret)').now())"
-$en = Invoke-RestMethod -Method Post -Uri "$B/api/2fa/enable" -Headers $H -ContentType "application/json" -Body ('{"code":"' + $code + '"}')
-"2FA enabled: $($en.ok)"
-try { Invoke-RestMethod -Method Post -Uri "$B/api/login" -ContentType "application/json" -Body '{"username":"admin","password":"test1234"}' | Out-Null; "LOGIN-WITHOUT-TOTP: UNEXPECTED SUCCESS" } catch { "LOGIN-WITHOUT-TOTP: blocked ($($_.Exception.Response.StatusCode.value__))" }
-$code2 = & $py -c "import pyotp; print(pyotp.TOTP('$($tfa.secret)').now())"
-$lg = Invoke-RestMethod -Method Post -Uri "$B/api/login" -ContentType "application/json" -Body ('{"username":"admin","password":"test1234","totp":"' + $code2 + '"}')
-"LOGIN-WITH-TOTP: ok, token len=$($lg.token.Length)"
+if (-not $Username -or -not $Password) {
+    Write-Warning "Set SOOSHPANEL_ADMIN_USERNAME and SOOSHPANEL_ADMIN_PASSWORD to run authenticated API checks."
+    exit 0
+}
 
-"=== QUOTA/EXPIRY LOGIC ==="
-$bad = Invoke-RestMethod -Method Post -Uri "$B/api/users" -Headers $H -ContentType "application/json" -Body '{"username":"quota-test","traffic_limit_gb":0.000001,"expiry_days":1,"inbound":"ws"}'
-"created quota-test id=$($bad.id)"
-$stats = Invoke-RestMethod -Uri "$B/api/stats" -Headers $H
-$stats.users | ForEach-Object { "$($_.username): active=$($_.active) expired=$($_.expired) quota=$($_.quota_exceeded)" }
-$tokBad = ($stats.users | Where-Object { $_.username -eq 'quota-test' })
-try { Invoke-WebRequest -UseBasicParsing "$B/sub/$tokBad" | Out-Null; "SUB-QUOTA-USER: UNEXPECTED OK" } catch { "SUB-QUOTA-USER: correctly rejected" }
+$body = @{ username = $Username; password = $Password }
+if ($Totp) { $body.totp = $Totp }
+try {
+    $login = Invoke-RestMethod -Method Post -Uri "$Base/api/login" -ContentType "application/json" -Body ($body | ConvertTo-Json -Compress) -TimeoutSec 10
+} catch {
+    throw "Login failed. Check the test credentials and, if enabled, set a current SOOSHPANEL_TOTP. $($_.Exception.Message)"
+}
+if (-not $login.token) { throw "Login response did not include a token." }
+$headers = @{ Authorization = "Bearer $($login.token)" }
+Write-Host "[PASS] Login returned a token"
+
+$users = Invoke-RestMethod -Uri "$Base/api/users" -Headers $headers -TimeoutSec 10
+Write-Host "[PASS] GET /api/users returned $(@($users).Count) item(s)"
+$stats = Invoke-RestMethod -Uri "$Base/api/stats" -Headers $headers -TimeoutSec 15
+if ($null -eq $stats.users) { throw "GET /api/stats response did not include the users collection." }
+Write-Host "[PASS] GET /api/stats returned $(@($stats.users).Count) user status record(s)"
+if ($stats.stats_available -eq $false) {
+    Write-Warning "Xray statistics are unavailable; quota enforcement has not been integration-verified."
+}
+Write-Host "Smoke test finished. This does not verify real client traffic, quota crossing, expiry synchronization, or simultaneous-device enforcement."
