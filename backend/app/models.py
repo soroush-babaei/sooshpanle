@@ -5,7 +5,7 @@ import uuid as _uuid
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import create_engine, String, Integer, Boolean, DateTime, Text, event
+from sqlalchemy import create_engine, String, Integer, Boolean, DateTime, Text, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 
 DB_PATH = os.environ.get("DB_PATH", "/data/soosh.db")
@@ -50,6 +50,8 @@ class PanelUser(Base):
     traffic_limit_gb: Mapped[float] = mapped_column(default=0.0)  # 0 = بی‌نهایت
     used_uplink: Mapped[int] = mapped_column(default=0)           # بایت
     used_downlink: Mapped[int] = mapped_column(default=0)         # بایت
+    last_stats_uplink: Mapped[int] = mapped_column(default=0)       # آخرین شمارنده Xray
+    last_stats_downlink: Mapped[int] = mapped_column(default=0)     # آخرین شمارنده Xray
     device_limit: Mapped[int] = mapped_column(default=2)          # اتصال هم‌زمان
     expiry: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -100,6 +102,23 @@ class AccessLog(Base):
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    # Small, idempotent SQLite migration for databases created by older versions.
+    with engine.begin() as conn:
+        columns = {col["name"] for col in inspect(engine).get_columns("panel_users")}
+        if "last_stats_uplink" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE panel_users ADD COLUMN last_stats_uplink INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.exec_driver_sql(
+                "UPDATE panel_users SET last_stats_uplink = used_uplink"
+            )
+        if "last_stats_downlink" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE panel_users ADD COLUMN last_stats_downlink INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.exec_driver_sql(
+                "UPDATE panel_users SET last_stats_downlink = used_downlink"
+            )
     # ادمین اولیه از .env
     from . import auth  # noqa: F401
     with Session(engine) as s:
