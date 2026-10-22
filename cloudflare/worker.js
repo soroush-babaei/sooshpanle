@@ -43,16 +43,29 @@ async function jwtSign(payload, secret) {
   const b64u = (a) => btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   return `${b64u(data)}.${b64u(sig)}`;
 }
+function decodeB64Url(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  return Uint8Array.from(atob(padded), (ch) => ch.charCodeAt(0));
+}
 async function jwtVerify(token, secret) {
-  const [p, s] = token.split(".");
-  if (!p || !s) return null;
-  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-  const sig = Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
-  const ok = await crypto.subtle.verify("HMAC", key, sig, enc.encode(p));
-  if (!ok) return null;
-  const payload = JSON.parse(dec.decode(enc.encode(p.replace(/-/g, "+").replace(/_/g, "/"))));
-  if (payload.exp < Date.now()) return null;
-  return payload;
+  if (typeof token !== "string" || token.length > 4096) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  try {
+    const payloadBytes = decodeB64Url(parts[0]);
+    const signature = decodeB64Url(parts[1]);
+    const key = await crypto.subtle.importKey(
+      "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]
+    );
+    const valid = await crypto.subtle.verify("HMAC", key, signature, payloadBytes);
+    if (!valid) return null;
+    const payload = JSON.parse(dec.decode(payloadBytes));
+    if (!payload || payload.role !== "admin" || !Number.isFinite(payload.exp) || payload.exp < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 // ───────────────────────── D1 ──────────────────────────────
@@ -83,7 +96,10 @@ async function getUserByToken(db, token) {
   return db.prepare("SELECT * FROM users WHERE sub_token=?").bind(token).first();
 }
 async function getUserByUuid(db, uuid) {
-  return db.prepare("SELECT * FROM users WHERE uuid=?").bind(uuid).first();
+  // VLESS carries UUID bytes without hyphens; D1 stores canonical UUID strings.
+  const normalized = String(uuid).replace(/-/g, "").toLowerCase();
+  return db.prepare("SELECT * FROM users WHERE lower(replace(uuid, '-', ''))=?")
+    .bind(normalized).first();
 }
 function userAllowed(u) {
   if (!u || !u.active) return false;
@@ -177,9 +193,17 @@ function vlessUri(u, host) {
 
 // ───────────────────────── احراز ادمین ─────────────────────
 async function requireAdmin(request, env) {
-  const t = (request.headers.get("Authorization") || "").replace("Bearer ", "");
-  const p = await jwtVerify(t, env.SECRET_KEY || "soosh-default-secret-change-me");
-  if (!p || p.role !== "admin") throw new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401 });
+  if (!env.SECRET_KEY || env.SECRET_KEY.length < 32) {
+    throw new Response(JSON.stringify({ detail: "server authentication is not configured" }), {
+      status: 503, headers: { "content-type": "application/json; charset=utf-8" }
+    });
+  }
+  const header = request.headers.get("Authorization") || "";
+  const match = /^Bearer ([A-Za-z0-9._-]+)$/.exec(header);
+  const p = match ? await jwtVerify(match[1], env.SECRET_KEY) : null;
+  if (!p) throw new Response(JSON.stringify({ detail: "unauthorized" }), {
+    status: 401, headers: { "content-type": "application/json; charset=utf-8" }
+  });
   return p;
 }
 const catchAuth = (fn) => async (request, env, ctx, db) => {
@@ -280,6 +304,8 @@ export default {
     const db = env.DB;
     const ip = request.headers.get("cf-connecting-ip") || "?";
 
+    if (!db) return json({ detail: "D1 binding DB is not configured" }, 503);
+
     // 1) پروکسی VLESS روی مسیر WS
     if (url.pathname === WS_PATH) {
       if (request.headers.get("Upgrade") !== "websocket") return json({ detail: "websocket only" }, 400);
@@ -308,14 +334,23 @@ export default {
     await ensureSchema(db);
 
     if (url.pathname === "/api/login" && request.method === "POST") {
-      const { username, password } = await request.json();
-      const okU = username === (env.ADMIN_USERNAME || "admin");
-      const okP = password === (env.ADMIN_PASSWORD || "");
+      if (!env.ADMIN_USERNAME || !env.ADMIN_PASSWORD || !env.SECRET_KEY || env.SECRET_KEY.length < 32) {
+        return json({ detail: "تنظیمات احراز هویت سرور کامل نیست" }, 503);
+      }
+      let body;
+      try { body = await request.json(); } catch { return json({ detail: "درخواست نامعتبر" }, 400); }
+      const { username, password } = body || {};
+      if (typeof username !== "string" || typeof password !== "string" ||
+          username.length > 128 || password.length > 1024) {
+        return json({ detail: "نام کاربری یا رمز اشتباه است" }, 401);
+      }
+      const okU = username === env.ADMIN_USERNAME;
+      const okP = password === env.ADMIN_PASSWORD;
       await log(db, ip, username || "?", "login", okU && okP ? 1 : 0);
-      if (!okU || !okP) return json({ detail: "نام کاربری یا رمز اشتباه" }, 401);
+      if (!okU || !okP) return json({ detail: "نام کاربری یا رمز اشتباه است" }, 401);
       const token = await jwtSign({ role: "admin", exp: Date.now() + SESSION_MIN * 60_000 },
-        env.SECRET_KEY || "soosh-default-secret-change-me");
-      return json({ token });
+        env.SECRET_KEY);
+      return json({ token }, 200, { "cache-control": "no-store" });
     }
 
     const admin = await asAdmin(request, env, ctx, db);
