@@ -26,3 +26,5 @@ jobs:
       - run: python -m compileall -q backend/app stats/stats.py
       - run: pytest -q
         working-directory: backend
+      - name: Validate generated Xray config shape
+        run: python -c "import json; c=json.load(open('xray/config.json')); assert isinstance(c.get('inbounds'),list); assert isinstance(c.get('outbounds'),list); print('Xray config JSON structure OK')"
