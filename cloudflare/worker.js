@@ -254,6 +254,7 @@ th,td{padding:8px;border-bottom:1px solid #2a3040;text-align:right}
 <script>
 let token=localStorage.getItem("t")||"";
 const H=()=>({"Authorization":"Bearer "+token,"Content-Type":"application/json"});
+function esc(v){return String(v??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));}
 async function login(){
  const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify({username:u.value,password:p.value})});
@@ -268,7 +269,7 @@ async function refresh(){
  const tb=tbl.querySelector("tbody");tb.innerHTML="";
  users.forEach(u=>{
   const st=!u.active?"⛔ غیرفعال":(u.expiry&&u.expiry<new Date().toISOString()?"⏰ منقضی":"🟢 فعال");
-  tb.innerHTML+=\`<tr><td><b>\${u.username}</b><div class="muted">\${u.note||""}</div></td>
+  tb.innerHTML+=\`<tr><td><b>\${esc(u.username)}</b><div class="muted">\${esc(u.note||"")}</div></td>
    <td class="\${u.active?'ok':'bad'}">\${st}</td><td>\${u.expiry?u.expiry.slice(0,10):"—"}</td>
    <td><a href="#" onclick="copyLink('\${u.uuid}');return false">کپی لینک</a>
        <div class="muted">/sub/\${u.sub_token.slice(0,8)}…</div></td>
@@ -292,7 +293,7 @@ async function viewLogs(){
  const logs=await fetch("/api/logs",{headers:H()}).then(r=>r.json());
  logsBox.style.display="block";
  logtbl.querySelector("tbody").innerHTML=logs.map(l=>
-  \`<tr><td>\${l.ts}</td><td>\${l.ip}</td><td>\${l.user}</td><td>\${l.action}</td>
+  \`<tr><td>\${esc(l.ts)}</td><td>\${esc(l.ip)}</td><td>\${esc(l.user)}</td><td>\${esc(l.action)}</td>
    <td class="\${l.ok?'ok':'bad'}">\${l.ok?'✔':'✘'}</td></tr>\`).join("")}
 if(token)boot();
 </script></body></html>`;
