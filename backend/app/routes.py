@@ -3,10 +3,11 @@ import base64
 import os
 import time
 from datetime import timedelta
+from math import isfinite
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -39,9 +40,9 @@ class UserIn(BaseModel):
     active: bool = True
     inbound: str = Field(default="ws", pattern=r"^(ws|reality)$")
     path: str = Field(default="/ws", min_length=1, max_length=64, pattern=r"^/[A-Za-z0-9/_-]*$")
-    sni: str = Field(default="", max_length=253)
+    sni: str = Field(default="", max_length=253, pattern=r"^[A-Za-z0-9.-]*$")
     fingerprint: str = Field(default="chrome", pattern=r"^(chrome|firefox|safari|edge|random)$")
-    flow: str = Field(default="", max_length=32)
+    flow: str = Field(default="", max_length=32, pattern=r"^[A-Za-z0-9-]*$")
     server_port: int = Field(default=443, ge=1, le=65535)
     reset_traffic: bool = False
 
@@ -124,6 +125,8 @@ def create_user(body: UserIn, _=Depends(auth.get_current_admin)):
     with Session(engine) as s:
         if s.query(PanelUser).filter_by(username=body.username).first():
             raise HTTPException(400, "نام کاربری تکراری است")
+        if not isfinite(body.traffic_limit_gb):
+            raise HTTPException(422, "مقدار سهمیه نامعتبر است")
         u = PanelUser(
             username=body.username, note=body.note,
             traffic_limit_gb=body.traffic_limit_gb, device_limit=body.device_limit,
@@ -149,11 +152,15 @@ def update_user(uid: int, body: UserIn, _=Depends(auth.get_current_admin)):
         for f in ("note", "traffic_limit_gb", "device_limit", "active", "inbound",
                   "path", "sni", "fingerprint", "flow", "server_port"):
             setattr(u, f, getattr(body, f))
+        if not isfinite(body.traffic_limit_gb):
+            raise HTTPException(422, "مقدار سهمیه نامعتبر است")
         if body.expiry_days:
-            import datetime as dt
-            u.expiry = dt.datetime.utcnow() + dt.timedelta(days=body.expiry_days)
+            u.expiry = now() + timedelta(days=body.expiry_days)
+        else:
+            u.expiry = None
         if body.reset_traffic:
             u.used_uplink = u.used_downlink = 0
+            u.last_stats_uplink = u.last_stats_downlink = 0
         s.commit()
         out = _user_json(u)
     xray_config.write_config()
@@ -185,33 +192,45 @@ async def _fetch_stats() -> dict:
 @router.get("/api/stats")
 async def stats(_=Depends(auth.get_current_admin)):
     per_user = await _fetch_stats()   # {"u<id>": {"up": n, "down": n}}
+    stats_available = bool(per_user) and "_error" not in per_user
     report = []
     with Session(engine) as s:
         for u in s.query(PanelUser).all():
             st = per_user.get(f"u{u.id}", {})
-            session_up = int(st.get("up", 0))
-            session_down = int(st.get("down", 0))
-            # تجمعی‌سازی
-            u.used_uplink = max(u.used_uplink, session_up)
-            u.used_downlink = max(u.used_downlink, session_down)
-            s.commit()
-            online = (session_up + session_down) > 0 and u.is_online_allowed
+            try:
+                session_up = max(0, int(st.get("up", 0)))
+                session_down = max(0, int(st.get("down", 0)))
+            except (TypeError, ValueError):
+                session_up = session_down = 0
+                stats_available = False
+            # Xray counters are process-lifetime counters. Persist only deltas;
+            # when the core restarts and counters reset, treat the new value as a new epoch.
+            if stats_available:
+                delta_up = (session_up - u.last_stats_uplink) if session_up >= u.last_stats_uplink else session_up
+                delta_down = (session_down - u.last_stats_downlink) if session_down >= u.last_stats_downlink else session_down
+                u.used_uplink += delta_up
+                u.used_downlink += delta_down
+                u.last_stats_uplink = session_up
+                u.last_stats_downlink = session_down
+            online = stats_available and (session_up + session_down) > 0 and u.is_online_allowed
             report.append({
                 "id": u.id, "username": u.username, "active": u.active,
                 "online": online, "used_gb": u.used_gb,
                 "limit_gb": u.traffic_limit_gb,
                 "expired": u.expired, "quota_exceeded": u.quota_exceeded,
             })
-        # سهمیه اتمام‌شده → غیرفعال و حذف از کانفیگ
+        # Disable expired/quota-exhausted users. Never infer zero usage from an
+        # unavailable stats service; current stored counters remain authoritative.
         changed = False
         for u in s.query(PanelUser).all():
-            if not u.is_online_allowed and u.active:
+            if (u.expired or u.quota_exceeded) and u.active:
                 u.active = False
                 changed = True
-        if changed:
+        if changed or stats_available:
             s.commit()
-    xray_config.write_config()
-    return {"users": report, "ts": int(time.time())}
+    if changed:
+        xray_config.write_config()
+    return {"users": report, "stats_available": stats_available, "ts": int(time.time())}
 
 
 @router.get("/api/logs")
