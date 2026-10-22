@@ -2,10 +2,12 @@
 import base64
 import os
 import time
+from datetime import timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import auth, subscription, xray_config
@@ -29,18 +31,18 @@ class TotpIn(BaseModel):
 
 
 class UserIn(BaseModel):
-    username: str
-    note: str = ""
-    traffic_limit_gb: float = 0.0
-    device_limit: int = 2
-    expiry_days: int = 0          # 0 = بدون انقضا
+    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    note: str = Field(default="", max_length=500)
+    traffic_limit_gb: float = Field(default=0.0, ge=0, le=100000)
+    device_limit: int = Field(default=2, ge=1, le=100)
+    expiry_days: int = Field(default=0, ge=0, le=3650)  # 0 = بدون انقضا
     active: bool = True
-    inbound: str = "ws"           # ws | reality
-    path: str = "/ws"
-    sni: str = ""
-    fingerprint: str = "chrome"
-    flow: str = ""
-    server_port: int = 443
+    inbound: str = Field(default="ws", pattern=r"^(ws|reality)$")
+    path: str = Field(default="/ws", min_length=1, max_length=64, pattern=r"^/[A-Za-z0-9/_-]*$")
+    sni: str = Field(default="", max_length=253)
+    fingerprint: str = Field(default="chrome", pattern=r"^(chrome|firefox|safari|edge|random)$")
+    flow: str = Field(default="", max_length=32)
+    server_port: int = Field(default=443, ge=1, le=65535)
     reset_traffic: bool = False
 
 
@@ -63,17 +65,26 @@ def _user_json(u: PanelUser) -> dict:
 @router.post("/api/login")
 def login(body: LoginIn, request: Request):
     ip = auth.client_ip(request)
-    # Rate limit ساده: حداکثر ۵ تلاش در دقیقه به‌ازای هر IP
+    cutoff = now() - timedelta(minutes=1)
     with Session(engine) as s:
+        # Persistent DB-backed limit (not a per-process in-memory counter).
+        failures = s.query(func.count(AccessLog.id)).filter(
+            AccessLog.ip == ip,
+            AccessLog.action.in_(("login", "login-totp")),
+            AccessLog.ok.is_(False),
+            AccessLog.ts >= cutoff,
+        ).scalar() or 0
+        if failures >= 5:
+            raise HTTPException(429, "تلاش‌های ورود بیش از حد؛ یک دقیقه بعد دوباره امتحان کنید")
         admin = s.query(Admin).filter_by(username=body.username).first()
         if not admin or not auth.verify_password(body.password, admin.password_hash):
-            auth.log_action(body.username, ip, "login", ok=False)
+            auth.log_action(body.username[:64], ip, "login", ok=False)
             raise HTTPException(401, "نام کاربری یا رمز اشتباه است")
         if admin.totp_enabled:
             if not body.totp or not auth.verify_totp(admin.totp_secret, body.totp):
-                auth.log_action(body.username, ip, "login-totp", ok=False)
+                auth.log_action(body.username[:64], ip, "login-totp", ok=False)
                 raise HTTPException(401, "کد دو مرحله‌ای نامعتبر است")
-    auth.log_action(body.username, ip, "login")
+    auth.log_action(body.username[:64], ip, "login")
     return {"token": auth.create_token(admin.id), "totp_enabled": admin.totp_enabled}
 
 
@@ -110,7 +121,6 @@ def list_users(_=Depends(auth.get_current_admin)):
 
 @router.post("/api/users")
 def create_user(body: UserIn, _=Depends(auth.get_current_admin)):
-    xray_config.write_config()  # ذخیره اولیه؛ بعد از افزودن کاربر دوباره می‌نویسیم
     with Session(engine) as s:
         if s.query(PanelUser).filter_by(username=body.username).first():
             raise HTTPException(400, "نام کاربری تکراری است")
