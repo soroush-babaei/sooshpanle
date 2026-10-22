@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SooshPanel</title>
+    <style>
+      :root {
+        --bg: #0f1218;
+        --card: #1a1f2b;
+        --fg: #e8eaf0;
+        --acc: #4f8cff;
+        --ok: #2ecc71;
+        --bad: #e74c3c;
+      }
+      * {
+        box-sizing: border-box;
+        font-family: Vazirmatn, Tahoma, sans-serif;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        margin: 0;
+        padding: 20px;
+      }
+      .card {
+        background: var(--card);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        font-size: 20px;
+      }
+      h2 {
+        font-size: 16px;
+        margin-top: 0;
+      }
+      input,
+      select {
+        background: #11151d;
+        color: var(--fg);
+        border: 1px solid #2a3040;
+        border-radius: 8px;
+        padding: 8px;
+        margin: 4px 0;
+        width: 100%;
+      }
+      button {
+        background: var(--acc);
+        color: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 9px 14px;
+        cursor: pointer;
+        margin: 4px 2px;
+      }
+      button.danger {
+        background: var(--bad);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th,
+      td {
+        padding: 8px;
+        border-bottom: 1px solid #2a3040;
+        text-align: right;
+      }
+      .ok {
+        color: var(--ok);
+      }
+      .bad {
+        color: var(--bad);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 8px;
+      }
+      #loginBox {
+        max-width: 360px;
+        margin: 10vh auto;
+      }
+      .qr img {
+        width: 180px;
+        height: 180px;
+      }
+      .muted {
+        color: #8b93a5;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loginBox" class="card">
+      <h2>ورود ادمین</h2>
+      <input id="u" placeholder="نام کاربری" />
+      <input id="p" type="password" placeholder="رمز عبور" />
+      <input id="t" placeholder="کد دو مرحله‌ای (در صورت فعال بودن)" />
+      <button onclick="login()">ورود</button>
+    </div>
+
+    <div id="panel" style="display: none">
+      <div
+        class="card"
+        style="
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        "
+      >
+        <h1>🔥 SooshPanel</h1>
+        <div>
+          <button onclick="enable2fa()">فعال‌سازی 2FA</button>
+          <button onclick="viewLogs()">لاگ دسترسی</button>
+          <button class="danger" onclick="logout()">خروج</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>افزودن کاربر</h2>
+        <div class="grid">
+          <input id="f_user" placeholder="نام کاربری" />
+          <input
+            id="f_limit"
+            type="number"
+            placeholder="حجم (GB، 0=بی‌نهایت)"
+          />
+          <input id="f_dev" type="number" placeholder="تعداد دستگاه" />
+          <input id="f_exp" type="number" placeholder="انقضا (روز، 0=ندارد)" />
+          <select id="f_in">
+            <option value="ws">VLESS+WS (CDN)</option>
+            <option value="reality">VLESS+Reality</option>
+          </select>
+          <input id="f_path" placeholder="مسیر WS (/ws)" />
+          <input id="f_sni" placeholder="SNI (اختیاری)" />
+          <input id="f_fp" placeholder="فینگرپرینت (chrome)" />
+        </div>
+        <button onclick="addUser()">ایجاد</button>
+      </div>
+
+      <div class="card">
+        <h2>
+          کاربران <span class="muted">(به‌روزرسانی خودکار هر ۵ ثانیه)</span>
+        </h2>
+        <div style="overflow-x: auto">
+          <table id="tbl">
+            <thead>
+              <tr>
+                <th>کاربر</th>
+                <th>وضعیت</th>
+                <th>مصرف</th>
+                <th>اینباند</th>
+                <th>لینک</th>
+                <th>QR</th>
+                <th>اقدام</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="logsBox" class="card" style="display: none">
+        <h2>لاگ دسترسی</h2>
+        <div style="overflow-x: auto">
+          <table id="logtbl">
+            <thead>
+              <tr>
+                <th>زمان</th>
+                <th>کاربر</th>
+                <th>IP</th>
+                <th>اقدام</th>
+                <th>نتیجه</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let token = localStorage.getItem("token") || "";
+      const API = "";
+      function H() {
+        return {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+        };
+      }
+
+      async function login() {
+        const r = await fetch(API + "/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: u.value,
+            password: p.value,
+            totp: t.value,
+          }),
+        });
+        if (!r.ok) {
+          alert("ورود ناموفق");
+          return;
+        }
+        const d = await r.json();
+        token = d.token;
+        localStorage.setItem("token", token);
+        boot();
+      }
+      function logout() {
+        localStorage.removeItem("token");
+        location.reload();
+      }
+      function boot() {
+        loginBox.style.display = "none";
+        panel.style.display = "block";
+        refresh();
+        setInterval(refresh, 5000);
+      }
+
+      async function refresh() {
+        const [users, stats] = await Promise.all([
+          fetch(API + "/api/users", { headers: H() }).then((r) => r.json()),
+          fetch(API + "/api/stats", { headers: H() }).then((r) => r.json()),
+        ]).catch(() => [null, null]);
+        if (!users) return;
+        const onlineMap = {};
+        ((stats && stats.users) || []).forEach((s) => (onlineMap[s.id] = s));
+        const tb = tbl.querySelector("tbody");
+        tb.innerHTML = "";
+        users.forEach((u) => {
+          const st = onlineMap[u.id] || {};
+          const status = !u.active
+            ? "⛔ غیرفعال"
+            : u.expired
+              ? "⏰ منقضی"
+              : u.quota_exceeded
+                ? "📉 اتمام حجم"
+                : st.online
+                  ? "🟢 فعال"
+                  : "⚪ خاموش";
+          tb.innerHTML += `<tr>
+      <td><b>${u.username}</b><div class="muted">${u.note || ""}</div></td>
+      <td class="${u.active && !u.expired && !u.quota_exceeded ? "ok" : "bad"}">${status}</td>
+      <td>${u.used_gb} / ${u.traffic_limit_gb || "∞"} GB</td>
+      <td>${u.inbound}</td>
+      <td><a href="#" onclick="copyLink('${encodeURIComponent(u.vless)}');return false">کپی لینک</a><div class="muted">${u.sub_url}</div></td>
+      <td class="qr"><a href="/sub/${u.sub_url.split("/sub/")[1]}/qr" target="_blank">مشاهده</a></td>
+      <td><button onclick="delUser(${u.id})" class="danger">حذف</button>
+          <button onclick="toggle(${u.id},${u.active})">${u.active ? "قطع" : "وصل"}</button></td>
+    </tr>`;
+        });
+      }
+      function copyLink(enc) {
+        navigator.clipboard.writeText(decodeURIComponent(enc));
+        alert("لینک کپی شد");
+      }
+
+      async function addUser() {
+        const body = {
+          username: f_user.value,
+          traffic_limit_gb: +f_limit.value || 0,
+          device_limit: +f_dev.value || 2,
+          expiry_days: +f_exp.value || 0,
+          inbound: f_in.value,
+          path: f_path.value || "/ws",
+          sni: f_sni.value,
+          fingerprint: f_fp.value || "chrome",
+          server_port: f_in.value === "reality" ? 8443 : 443,
+        };
+        const r = await fetch(API + "/api/users", {
+          method: "POST",
+          headers: H(),
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          alert((await r.json()).detail || "خطا");
+          return;
+        }
+        f_user.value = "";
+        refresh();
+      }
+      async function delUser(id) {
+        if (!confirm("حذف شود؟")) return;
+        await fetch(API + "/api/users/" + id, {
+          method: "DELETE",
+          headers: H(),
+        });
+        refresh();
+      }
+      async function toggle(id, active) {
+        await fetch(API + "/api/users/" + id, {
+          method: "PUT",
+          headers: H(),
+          body: JSON.stringify({
+            username: "",
+            note: "",
+            active: !active,
+            reset_traffic: false,
+          }),
+        });
+        refresh();
+      }
+
+      async function enable2fa() {
+        const s = await fetch(API + "/api/2fa/setup", { headers: H() }).then(
+          (r) => r.json(),
+        );
+        const code = prompt(
+          "QR/URI:\n" +
+            s.otpauth_url +
+            "\n\nکد ۶ رقمی اپ Authenticator را وارد کنید:",
+        );
+        if (!code) return;
+        const r = await fetch(API + "/api/2fa/enable", {
+          method: "POST",
+          headers: H(),
+          body: JSON.stringify({ code }),
+        });
+        alert(r.ok ? "2FA فعال شد" : "کد نامعتبر");
+      }
+      async function viewLogs() {
+        const logs = await fetch(API + "/api/logs", { headers: H() }).then(
+          (r) => r.json(),
+        );
+        logsBox.style.display = "block";
+        logtbl.querySelector("tbody").innerHTML = logs
+          .map(
+            (l) =>
+              `<tr><td>${l.ts}</td><td>${l.user}</td><td>${l.ip}</td><td>${l.action}</td>
+     <td class="${l.ok ? "ok" : "bad"}">${l.ok ? "✔" : "✘"}</td></tr>`,
+          )
+          .join("");
+      }
+
+      if (token) {
+        boot();
+      }
+    </script>
+  </body>
+</html>

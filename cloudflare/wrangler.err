@@ -1,0 +1,2 @@
+npm notice run npx
+npm notice run wrangler dev --port 8787 --local

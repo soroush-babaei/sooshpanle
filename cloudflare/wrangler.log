@@ -1,0 +1,19 @@
+
+ ⛅️ wrangler 4.151.3
+────────────────────
+Using secrets defined in .dev.vars
+Your Worker has access to the following bindings:
+Binding                              Resource                  Mode
+env.DB (soosh-db)                    D1 Database               local
+env.ADMIN_USERNAME ("(hidden)")      Environment Variable      local
+env.WS_PATH ("/ws")                  Environment Variable      local
+env.ADMIN_PASSWORD ("(hidden)")      Environment Variable      local
+env.SECRET_KEY ("(hidden)")          Environment Variable      local
+
+⎔ Starting local server...
+[wrangler:info] Ready on http://127.0.0.1:8787
+[wrangler:info] GET / 200 OK (15ms)
+[wrangler:info] GET / 200 OK (9ms)
+[wrangler:warn] The Workers runtime crashed unexpectedly and is being restarted (crash #1). Any additional runtime output above may indicate the cause.
+[wrangler:warn] The Workers runtime crashed unexpectedly and is being restarted (crash #2). Any additional runtime output above may indicate the cause.
+[wrangler:warn] The Workers runtime crashed unexpectedly and is being restarted (crash #3). Any additional runtime output above may indicate the cause.

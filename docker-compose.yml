@@ -1,0 +1,51 @@
+services:
+  sooshpanel:
+    build: ./backend
+    container_name: sooshpanel
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DB_PATH=/data/soosh.db
+      - XRAY_CONFIG_PATH=/xray/config.json
+      - DOCKER_SOCK=/var/run/docker.sock # برای ری‌لود هسته؛ در صورت نگرانی امنیتی حذف کنید
+    volumes:
+      - ./data:/data
+      - ./xray:/xray
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:8000:8000" # پنل فقط از طریق تونل CF/ریورس‌پروکسی منتشر شود
+    networks: [ soosh-net ]
+
+  xray:
+    image: teddysun/xray:latest
+    container_name: soosh-xray
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./xray:/etc/xray
+    command: [ "xray", "run", "-c", "/etc/xray/config.json" ]
+    ports:
+      - "8080:8080" # VLESS+WS — پشت Cloudflare
+      - "8443:8443" # VLESS+Reality — مستقیم (IP تمیز)
+    networks: [ soosh-net ]
+
+  stats:
+    build: ./stats
+    container_name: soosh-stats
+    restart: unless-stopped
+    # از طریق شبکه داخلی به StatsService اتصال (10085) وصل می‌شود
+    environment:
+      - XRAY_API_SERVER=soosh-xray:10085
+    networks: [ soosh-net ]
+
+  # تونل Cloudflare — پس از ساخت در داشبورد CF توکن بگیرید
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: soosh-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
+    networks: [ soosh-net ]
+
+networks:
+  soosh-net:
+    driver: bridge

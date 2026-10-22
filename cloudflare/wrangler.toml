@@ -1,0 +1,13 @@
+name = "sooshpanel"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "soosh-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"   # wrangler d1 create soosh-db
+
+[vars]
+ADMIN_USERNAME = "admin"
+WS_PATH = "/ws"
